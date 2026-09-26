@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>DSA Practice Solver (Gemini + Grok) — Admin</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin-top: 20px; }
+  label { display: block; font-size: 0.85rem; color: #555; margin-top: 12px; }
+  .value { font-family: monospace; font-size: 0.95rem; word-break: break-all; }
+  input[type=password] { padding: 8px; width: 100%; box-sizing: border-box; margin-top: 6px; }
+  button { margin-top: 10px; margin-right: 8px; padding: 8px 14px; cursor: pointer; }
+  #status { color: #a00; margin-top: 10px; }
+  #dash-status { color: #a00; margin-top: 10px; }
+  pre { background: #f6f6f6; padding: 10px; border-radius: 6px; overflow-x: auto; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <h1>DSA Practice Solver (Gemini + Grok) — Admin</h1>
+
+  <div id="login-card" class="card">
+    <label for="password">Administrator password</label>
+    <input type="password" id="password" />
+    <button id="login-btn">Log in</button>
+    <div id="status"></div>
+  </div>
+
+  <div id="dashboard" class="card hidden">
+    <label>Provider Name</label>
+    <div class="value" id="p-name">—</div>
+
+    <label>Model</label>
+    <div class="value" id="p-model">—</div>
+
+    <label>Endpoint</label>
+    <div class="value" id="p-endpoint">—</div>
+
+    <label>API Key</label>
+    <div class="value" id="p-key">••••••••••••••••</div>
+
+    <label>Status</label>
+    <div class="value" id="p-status">—</div>
+
+    <div>
+      <button id="show-key-btn">Show API Key</button>
+      <button id="regen-btn">Regenerate API Key</button>
+      <button id="test-btn">Test Backend</button>
+    </div>
+
+    <div id="dash-status"></div>
+
+    <pre id="test-result" class="hidden"></pre>
+  </div>
+
+<script>
+async function api(path, opts = {}) {
+  const res = await fetch(path, { credentials: "same-origin", headers: { "Content-Type": "application/json" }, ...opts });
+  if (!res.ok) {
+    let detail = `Request failed: ${res.status}`;
+    try {
+      const body = await res.json();
+      // FastAPI HTTPException errors arrive as {"detail": "..."}
+      if (body && body.detail) detail = body.detail;
+    } catch (_) {
+      // response wasn't JSON; fall back to the generic status message
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+async function loadProvider(reveal = false) {
+  const cfg = await api(`/admin/provider?reveal=${reveal}`);
+  document.getElementById("p-name").textContent = cfg.name;
+  document.getElementById("p-model").textContent = cfg.model;
+  document.getElementById("p-endpoint").textContent = cfg.endpoint;
+  document.getElementById("p-status").textContent = cfg.status;
+  if (reveal) document.getElementById("p-key").textContent = cfg.api_key;
+}
+
+document.getElementById("login-btn").onclick = async () => {
+  const password = document.getElementById("password").value;
+  const statusEl = document.getElementById("status");
+  try {
+    await api("/admin/login", { method: "POST", body: JSON.stringify({ password }) });
+    statusEl.textContent = "";
+    document.getElementById("login-card").classList.add("hidden");
+    document.getElementById("dashboard").classList.remove("hidden");
+    await loadProvider(false);
+  } catch (e) {
+    statusEl.textContent = "Login failed. Check the administrator password.";
+  }
+};
+
+document.getElementById("show-key-btn").onclick = () => loadProvider(true);
+
+document.getElementById("regen-btn").onclick = async () => {
+  if (!confirm("Regenerate the API key? The current key will stop working immediately.")) return;
+  const statusEl = document.getElementById("dash-status");
+  statusEl.textContent = "";
+  try {
+    await api("/admin/provider/regenerate", { method: "POST" });
+    document.getElementById("p-key").textContent = "••••••••••••••••";
+    await loadProvider(false);
+  } catch (e) {
+    statusEl.textContent = e.message;
+  }
+};
+
+document.getElementById("test-btn").onclick = async () => {
+  const el = document.getElementById("test-result");
+  el.classList.remove("hidden");
+  el.textContent = "Running test...";
+  try {
+    const result = await api("/admin/test", { method: "POST" });
+    el.textContent = JSON.stringify(result, null, 2);
+  } catch (e) {
+    el.textContent = `Error: ${e.message}`;
+  }
+};
+</script>
+</body>
+</html>

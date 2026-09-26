@@ -1,0 +1,63 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Vercel routes to the container on the port it expects: 80 by default,
+# or whatever PORT is set to in the project settings. Never bake 8000 in
+# here — a hardcoded value that disagrees with Vercel's expected port
+# makes every request fail with FUNCTION_INVOCATION_FAILED.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=80
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
+
+COPY app ./app
+
+# --- Bake PaddleOCR model weights into the image at build time ---
+#
+# Vercel container Functions are stateless: nothing written at runtime
+# (including PaddleOCR's normal ~/.paddlex model cache) survives past
+# that one instance, and there's no volume to mount like there is in
+# docker-compose. Downloading weights on every cold start would make
+# the first request after every scale-to-zero painfully slow (and
+# unreliable, since outbound download traffic during a cold start is
+# a bad idea).
+#
+# So instead we instantiate PaddleOCR once here, during the build,
+# with the same defaults as .env.example / app/config.py. This
+# downloads the weights into /root/.paddlex as a normal image layer,
+# so they ship inside the container and are already on disk before
+# the process ever starts.
+#
+# IMPORTANT: these args must match the runtime defaults in app/config.py
+# (PADDLE_OCR_*). If you override them via Vercel project env vars, update
+# this RUN step to match — otherwise the baked-in weights won't match what
+# is requested at runtime, and PaddleOCR will fall back to downloading the
+# right ones on first use after all (slow + unreliable on a cold start).
+RUN python -c "\
+from paddleocr import PaddleOCR; \
+PaddleOCR( \
+    text_detection_model_name='PP-OCRv5_mobile_det', \
+    text_recognition_model_name='en_PP-OCRv5_mobile_rec', \
+    text_det_limit_type='max', \
+    text_det_limit_side_len=2000, \
+    device='cpu', \
+    use_textline_orientation=True, \
+    use_doc_orientation_classify=False, \
+    use_doc_unwarping=False, \
+)"
+
+EXPOSE 80
+
+# Vercel routes to the container on the $PORT it injects (or 80 if it
+# doesn't set one) — bind to that rather than a hardcoded port.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-80}"]
