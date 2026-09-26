@@ -18,7 +18,7 @@ def test_valid_api_key_passes_auth(app_client, backend_api_key, monkeypatch):
     # Mock the solver so we isolate auth behavior from provider calls.
     import app.api.chat_completions as cc
 
-    async def fake_solve(settings, text, client=None):
+    async def fake_solve(settings, text, client=None, max_tokens=None):
         return "## Problem\n...\n## Code\n```cpp\nint main(){}\n```"
 
     monkeypatch.setattr(cc, "solve_problem", fake_solve)

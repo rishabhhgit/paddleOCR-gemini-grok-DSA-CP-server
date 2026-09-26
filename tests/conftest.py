@@ -20,6 +20,17 @@ def tmp_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_MODEL", "fake-gemini-model")
     monkeypatch.setenv("GROK_API_KEY", "fake-grok-key")
     monkeypatch.setenv("GROK_MODEL", "fake-grok-model")
+    # Every limit defaults to 0 = unlimited in app/config.py, so tests
+    # that exist to prove a limit still refuses a request have to pin
+    # one. Nothing here changes what production does.
+    monkeypatch.setenv("MAX_IMAGES", "20")
+    monkeypatch.setenv("MAX_IMAGE_SIZE_MB", "10")
+    monkeypatch.setenv("MAX_OCR_BATCH_IMAGES", "4")
+    monkeypatch.setenv("MAX_OCR_BATCH_BYTES", "3000000")
+    monkeypatch.setenv("MAX_PROMPT_CHARS", "250000")
+    monkeypatch.setenv("SOLVER_MAX_TOKENS", "32768")
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "540")
+    monkeypatch.setenv("ALWAYS_VERIFY", "false")
     # Skip the real PaddleOCR model load at app startup: tests monkeypatch
     # run_ocr_on_images directly and never need the real local engine, and
     # loading/downloading actual model weights would make every test run

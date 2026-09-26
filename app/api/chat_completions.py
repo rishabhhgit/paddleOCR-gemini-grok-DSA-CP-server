@@ -16,9 +16,19 @@ from app.services.consensus_solver import ConsensusSolverError, solve_problem
 from app.services.paddle_ocr import PaddleOcrError, run_ocr_on_images
 from app.services.problem_reconstructor import reconstruct_problem
 from app.utils.images import ImageValidationError, decode_and_validate_image
-from app.utils.logging import Timer, log_request_event, new_request_id
+from app.utils.logging import Timer, log_request_event, log_solver_failure, new_request_id
 
 router = APIRouter(tags=["chat"])
+
+
+def _client_max_tokens(body: ChatCompletionRequest) -> int | None:
+    """Maps the client's optional `max_tokens` onto the solver's output
+    budget. None means "use the server's SOLVER_MAX_TOKENS"; each
+    provider client applies that setting as a hard ceiling, so a client
+    can only ever ask for less than the server allows, never more."""
+    if body.max_tokens is None or body.max_tokens <= 0:
+        return None
+    return body.max_tokens
 
 
 def _extract_text_and_images(req: ChatCompletionRequest, max_image_mb: int) -> tuple[str, list[ExtractedImage]]:
@@ -104,7 +114,9 @@ async def chat_completions(
         prior_results = list(body.ocr_results or [])
         total_screenshots = len(prior_results) + len(images)
 
-        if total_screenshots > settings.MAX_IMAGES:
+        # Each limit below treats 0 (or less) as "no limit" — see the
+        # convention documented on Settings in app/config.py.
+        if settings.MAX_IMAGES > 0 and total_screenshots > settings.MAX_IMAGES:
             log_request_event(request_id, num_images=total_screenshots, success=False, http_status=400)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -125,7 +137,7 @@ async def chat_completions(
             )
 
         inline_bytes = sum(len(img.data) for img in images)
-        if inline_bytes > settings.MAX_OCR_BATCH_BYTES:
+        if settings.MAX_OCR_BATCH_BYTES > 0 and inline_bytes > settings.MAX_OCR_BATCH_BYTES:
             log_request_event(request_id, num_images=total_screenshots, success=False, http_status=413)
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -171,7 +183,7 @@ async def chat_completions(
             # Text-only path: never invoke OCR.
             problem_text = text
 
-        if len(problem_text) > settings.MAX_PROMPT_CHARS:
+        if settings.MAX_PROMPT_CHARS > 0 and len(problem_text) > settings.MAX_PROMPT_CHARS:
             log_request_event(
                 request_id,
                 num_images=total_screenshots,
@@ -193,8 +205,15 @@ async def chat_completions(
         solver_timer = Timer()
         try:
             with solver_timer:
-                solution_text = await solve_problem(settings, problem_text)
-        except ConsensusSolverError:
+                solution_text = await solve_problem(
+                    settings, problem_text, max_tokens=_client_max_tokens(body)
+                )
+        except ConsensusSolverError as exc:
+            # The detail stays out of the response body (it can name
+            # providers and limits), but it has to reach the logs — a
+            # truncated answer now surfaces as a 502 here, and without
+            # this line the reason for it would be invisible.
+            log_solver_failure(request_id, str(exc))
             log_request_event(
                 request_id,
                 num_images=total_screenshots,

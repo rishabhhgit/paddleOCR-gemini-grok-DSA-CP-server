@@ -41,6 +41,22 @@ def log_request_event(
     )
 
 
+def log_solver_failure(request_id: str, reason: str) -> None:
+    """Records why the solver pipeline rejected an answer.
+
+    This is the only place a provider error message is written down, and
+    it is deliberately logged rather than returned to the client: the
+    message may name the provider, its output cap, or a limit, which is
+    exactly what makes a 502 diagnosable, and none of which belongs in a
+    public response body. It must never contain API keys, auth headers,
+    or raw request/response bodies — the errors raised by
+    app/services/gemini_client.py and grok_client.py are built from
+    status codes and structured provider message fields only (see
+    app/services/provider_errors.py).
+    """
+    logger.warning("request_id=%s solver_failed=%s", request_id, reason)
+
+
 class Timer:
     """Small helper: `with Timer() as t: ...` then `t.elapsed_ms`."""
 

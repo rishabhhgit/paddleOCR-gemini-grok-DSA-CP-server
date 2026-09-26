@@ -62,9 +62,12 @@ def decode_and_validate_image(url: str, max_size_mb: int) -> DecodedImage:
     except Exception as exc:  # noqa: BLE001
         raise ImageValidationError(f"Invalid base64 image data: {exc}") from exc
 
-    max_bytes = max_size_mb * 1024 * 1024
-    if len(raw_bytes) > max_bytes:
-        raise ImageTooLargeError(f"Image exceeds maximum allowed size of {max_size_mb}MB.")
+    # `max_size_mb` of 0 (or less) means "no limit" — see the convention
+    # documented on Settings in app/config.py.
+    if max_size_mb > 0:
+        max_bytes = max_size_mb * 1024 * 1024
+        if len(raw_bytes) > max_bytes:
+            raise ImageTooLargeError(f"Image exceeds maximum allowed size of {max_size_mb}MB.")
 
     try:
         with Image.open(io.BytesIO(raw_bytes)) as img:
@@ -89,5 +92,7 @@ def decode_and_validate_image(url: str, max_size_mb: int) -> DecodedImage:
 
 
 def validate_image_count(count: int, max_images: int) -> None:
-    if count > max_images:
+    # `max_images` of 0 (or less) means "no limit" — see the convention
+    # documented on Settings in app/config.py.
+    if max_images > 0 and count > max_images:
         raise TooManyImagesError(f"Request contains {count} images; maximum allowed is {max_images}.")

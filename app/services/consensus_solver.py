@@ -74,19 +74,24 @@ def _build_arbiter_content(problem_text: str, candidate_a: str, candidate_b: str
     )
 
 
-async def _solve_both(settings: Settings, problem_text: str, client: httpx.AsyncClient):
+async def _solve_both(settings: Settings, problem_text: str, client: httpx.AsyncClient, max_tokens: int | None):
     results = await asyncio.gather(
-        call_gemini(settings, SOLVER_SYSTEM_PROMPT, problem_text, client=client),
-        call_grok(settings, SOLVER_SYSTEM_PROMPT, problem_text, client=client),
+        call_gemini(settings, SOLVER_SYSTEM_PROMPT, problem_text, client=client, max_tokens=max_tokens),
+        call_grok(settings, SOLVER_SYSTEM_PROMPT, problem_text, client=client, max_tokens=max_tokens),
         return_exceptions=True,
     )
     return results  # [gemini_result_or_exc, grok_result_or_exc]
 
 
-async def _arbitrate_both(settings: Settings, arbiter_content: str, client: httpx.AsyncClient):
+async def _arbitrate_both(
+    settings: Settings,
+    arbiter_content: str,
+    client: httpx.AsyncClient,
+    max_tokens: int | None,
+):
     results = await asyncio.gather(
-        call_gemini(settings, ARBITER_SYSTEM_PROMPT, arbiter_content, client=client),
-        call_grok(settings, ARBITER_SYSTEM_PROMPT, arbiter_content, client=client),
+        call_gemini(settings, ARBITER_SYSTEM_PROMPT, arbiter_content, client=client, max_tokens=max_tokens),
+        call_grok(settings, ARBITER_SYSTEM_PROMPT, arbiter_content, client=client, max_tokens=max_tokens),
         return_exceptions=True,
     )
     return results  # [gemini_result_or_exc, grok_result_or_exc]
@@ -116,13 +121,17 @@ async def solve_problem(
     settings: Settings,
     problem_text: str,
     client: httpx.AsyncClient | None = None,
+    max_tokens: int | None = None,
 ) -> str:
+    """`max_tokens` is an optional per-call output budget. Each provider
+    clamps it to `Settings.SOLVER_MAX_TOKENS`, and if the model rejects
+    the value it retries once at the ceiling the model names."""
     owns_client = client is None
     if owns_client:
         client = httpx.AsyncClient()
     try:
         # --- Step 1: independent solves ---
-        gemini_solution, grok_solution = await _solve_both(settings, problem_text, client)
+        gemini_solution, grok_solution = await _solve_both(settings, problem_text, client, max_tokens)
         gemini_ok = not isinstance(gemini_solution, (Exception,))
         grok_ok = not isinstance(grok_solution, (Exception,))
 
@@ -141,7 +150,7 @@ async def solve_problem(
 
         # --- Step 3: cross-verification / arbitration by both models ---
         arbiter_content = _build_arbiter_content(problem_text, gemini_solution, grok_solution)
-        gemini_arb, grok_arb = await _arbitrate_both(settings, arbiter_content, client)
+        gemini_arb, grok_arb = await _arbitrate_both(settings, arbiter_content, client, max_tokens)
         gemini_arb_ok = not isinstance(gemini_arb, (Exception,))
         grok_arb_ok = not isinstance(grok_arb, (Exception,))
 

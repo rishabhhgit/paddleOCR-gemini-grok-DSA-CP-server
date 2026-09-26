@@ -25,8 +25,13 @@ import time
 import urllib.error
 import urllib.request
 
+# Client-side chunking defaults. They no longer mirror the server's
+# MAX_OCR_BATCH_IMAGES/MAX_OCR_BATCH_BYTES (both 0 = unlimited by
+# default); they stay conservative because a single oversized POST can
+# still be refused by a proxy or by Vercel's 4.5 MB body cap. Override
+# with --batch-images/--batch-bytes when your host has no such limit.
 DEFAULT_BATCH_IMAGES = 4
-DEFAULT_BATCH_BYTES = 3_000_000  # matches MAX_OCR_BATCH_BYTES
+DEFAULT_BATCH_BYTES = 3_000_000
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 

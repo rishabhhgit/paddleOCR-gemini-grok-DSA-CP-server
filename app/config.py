@@ -99,16 +99,18 @@ class Settings(BaseSettings):
     # --- Gemini solver (server-side only, never exposed to clients) ---
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = ""
-    # Mirrors GROK_BASE_URL. Point it at a proxy or a recording mock to
-    # inspect exactly what is sent to the model (the local end-to-end
-    # check in scripts/solve_screenshots.py relies on this); normal
-    # deployments leave it alone.
-    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com"
+    # Google's OpenAI-compatible surface; the client appends
+    # `/chat/completions` and authenticates with a bearer key. Mirrors
+    # GROK_BASE_URL — point it at a proxy or a recording mock to inspect
+    # exactly what is sent to the model; normal deployments leave it
+    # alone (trailing slash optional).
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai"
 
-    # --- Grok solver (server-side only, never exposed to clients) ---
+    # --- Grok solver, served by Groq (never exposed to clients) ---
     GROK_API_KEY: str = ""
     GROK_MODEL: str = ""
-    GROK_BASE_URL: str = "https://api.x.ai/v1"
+    # OpenAI-compatible; the client appends `/chat/completions`.
+    GROK_BASE_URL: str = "https://api.groq.com/openai/v1"
 
     # --- Consensus / verification behaviour ---
     # Which model arbitrates when Gemini's and Grok's independent
@@ -116,64 +118,92 @@ class Settings(BaseSettings):
     # Only used as a last-resort tiebreaker (see services/consensus_solver.py).
     TIEBREAKER_PROVIDER: str = "gemini"
     # If true, run the (more expensive) full cross-verification pipeline
-    # even when both models already agree token-for-token. Off by default
-    # since identical output from two independent models is already a
-    # strong correctness signal.
-    ALWAYS_VERIFY: bool = False
+    # even when both models already agree token-for-token. On by default:
+    # every answer is re-derived and judged by both models rather than
+    # being trusted because two independent first passes happened to
+    # match, which is the strongest correctness signal this pipeline can
+    # buy. Costs 2 extra model calls per request. Set false to trade
+    # that safety net for latency/cost when the models already agree.
+    ALWAYS_VERIFY: bool = True
 
-    # --- Image handling ---
+    # --- Request limits ---
+    # EVERY limit in this file follows one convention: 0 (or negative)
+    # means NO LIMIT. The defaults are all 0 — nothing this server owns
+    # may refuse a request or truncate what it assembles.
+    #
+    # Limits imposed by someone else still exist and are not ours to
+    # remove: the model's own context window, and, when deployed on
+    # Vercel, its 4.5 MB request-body cap and function duration limit.
+    # Those surface as provider/platform errors rather than as a locally
+    # rejected request. On self-hosted Docker/docker-compose there is no
+    # such outer ceiling at all.
+
     # Total screenshots (inline images + previously-OCR'd results echoed
     # back through `ocr_results`) accepted by ONE /v1/chat/completions
-    # call. This is a *solve* limit, not a transport limit: with the
-    # two-phase flow (POST /v1/ocr per batch, then one solve request) the
-    # payload is text and stays tiny regardless of image count.
-    MAX_IMAGES: int = 20
-    MAX_IMAGE_SIZE_MB: int = 10
-    # Screenshots accepted by ONE POST /v1/ocr call. Deliberately small:
-    # Vercel caps request bodies at 4.5 MB, and base64 inflates by 4/3,
-    # so a batch has to leave room for the images themselves. 4 x ~1 MB
-    # stays comfortably inside that.
-    MAX_OCR_BATCH_IMAGES: int = 4
+    # call. 0 = any number. This is a *solve* limit, not a transport
+    # limit: with the two-phase flow (POST /v1/ocr per batch, then one
+    # solve request) the payload is text and stays tiny regardless of
+    # image count.
+    MAX_IMAGES: int = 0
+    # Per-image decoded size in MB. 0 = any size.
+    MAX_IMAGE_SIZE_MB: int = 0
+    # Screenshots accepted by ONE POST /v1/ocr call. 0 = any number.
+    # Keep > 0 only when the host enforces a request-body cap (Vercel:
+    # 4.5 MB, and base64 inflates by 4/3) and you would rather give the
+    # client an actionable message than let the platform fail it with a
+    # bare 413.
+    MAX_OCR_BATCH_IMAGES: int = 0
     # Total *decoded* image bytes accepted by one POST /v1/ocr call.
-    # This is the real constraint behind MAX_OCR_BATCH_IMAGES: base64
-    # encoding adds 33%, so 3 MB of image data is ~4 MB on the wire —
-    # under Vercel's 4.5 MB body cap with headroom. Exceeding that cap
-    # fails at the platform with an opaque 413 before our code ever
-    # runs, so it is checked here where the client gets an actionable
-    # message instead. Raise it if your host has no request-body limit
-    # (self-hosted Docker has none).
-    MAX_OCR_BATCH_BYTES: int = 3_000_000
-    # Hard ceiling on the assembled prompt handed to Gemini/Grok, in
-    # characters (~0.75 chars/token). Rejected locally with a clear 413
-    # rather than letting the provider return an opaque context-length
-    # error after the OCR work is already done.
-    MAX_PROMPT_CHARS: int = 250_000
+    # 0 = any size. Same Vercel caveat as MAX_OCR_BATCH_IMAGES: 3_000_000
+    # is ~4 MB of base64 on the wire, just under Vercel's 4.5 MB cap.
+    MAX_OCR_BATCH_BYTES: int = 0
+    # Assembled prompt handed to Gemini/Grok, in characters (~0.75
+    # chars/token). 0 = any length. Set > 0 only to fail fast with a
+    # clear 413 instead of letting the provider return an opaque
+    # context-length error after the OCR work is already done.
+    MAX_PROMPT_CHARS: int = 0
+
+    # --- Output budget ---
+    # Hard ceiling on how many tokens ONE provider call (Gemini or Grok)
+    # may generate. 0 = NO LIMIT: each client asks for the largest budget
+    # its provider documents (see UNLIMITED_BUDGET in gemini_client.py /
+    # grok_client.py), which is as close to "no cap" as an API that
+    # requires a number can get. A positive value imposes a cap.
+    #
+    # An explicit maximum matters. Omitting the field does NOT mean
+    # "unlimited": Gemini falls back to a model-dependent default that is
+    # often far below its real output limit, and that default is what
+    # used to cut solutions off mid-function. Gemini 2.5 makes it worse
+    # because THINKING tokens count against max_tokens too — a hard
+    # problem can spend the whole default thinking and leave too little
+    # budget for the code.
+    #
+    # A model whose own maximum is lower than what we ask for rejects the
+    # request with a 400 naming the cap; the client retries once
+    # at the ceiling the model names (or with no budget if it names
+    # none), remembers it for that model, and — whatever happens — never
+    # returns a response the provider marked as truncated.
+    SOLVER_MAX_TOKENS: int = 0
 
     # --- Timeouts ---
     # Per upstream model call (Gemini or Grok), applied independently to
-    # each request httpx makes. A hard problem with a long, detailed
-    # answer can legitimately take several minutes to generate — 90 s
-    # was cutting those off mid-answer (httpx.ReadTimeout -> the call is
-    # counted as failed, so you'd silently get the *other* provider's
-    # answer, or nothing if both timed out). 540 s (9 min) gives a single
-    # call plenty of room without being effectively infinite.
+    # each request httpx makes. 0 = NO TIMEOUT: the call waits however
+    # long the model takes. A positive value is a cap in seconds.
+    #
+    # Timeouts used to cut answers off mid-generation: httpx.ReadTimeout
+    # made the call count as failed, so you'd silently get the *other*
+    # provider's answer, or nothing at all if both timed out.
     #
     # There are at most two SEQUENTIAL rounds per request (solve, then —
-    # only if the two providers disagree — arbitration; see
-    # consensus_solver.py), so the worst case is OCR time plus up to
-    # 2 x REQUEST_TIMEOUT_SECONDS. At 540 s that's up to ~18 minutes,
-    # which is longer than the total request time this server itself
-    # enforces anywhere else. If you deploy on Vercel (Dockerfile.vercel),
-    # the PLATFORM also kills the whole request at its own function
-    # duration limit regardless of this setting (300 s by default, up to
-    # 800 s on Pro/Enterprise, or up to 1800 s with the "extended max
-    # duration" beta enabled) — raising REQUEST_TIMEOUT_SECONDS alone
-    # does nothing there unless you also raise Project Settings ->
-    # Functions -> Function Max Duration to comfortably cover the worst
-    # case above, or accept that disagreement-triggered arbitration on a
-    # very slow provider response could still hit a platform 504. On
-    # self-hosted Docker/docker-compose there is no such outer ceiling.
-    REQUEST_TIMEOUT_SECONDS: int = 540
+    # only when the two providers disagree — arbitration; see
+    # consensus_solver.py). This server enforces no total deadline of its
+    # own. The one ceiling that remains is whichever the host imposes:
+    # Vercel kills the whole request at its function duration limit (300 s
+    # by default, up to 800 s on Pro/Enterprise, or 1800 s with the
+    # extended-max-duration beta) no matter what this is set to, so raise
+    # Project Settings -> Functions -> Function Max Duration there too.
+    # Self-hosted Docker/docker-compose has no such outer ceiling.
+    REQUEST_TIMEOUT_SECONDS: int = 0
 
     # --- Misc ---
     ALLOWED_ORIGINS: str = ""  # comma-separated list

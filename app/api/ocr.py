@@ -92,7 +92,9 @@ async def ocr_batch(
         )
 
     total_bytes = sum(len(img.data) for img in images)
-    if total_bytes > settings.MAX_OCR_BATCH_BYTES:
+    # MAX_OCR_BATCH_BYTES of 0 (or less) means "no limit" — see the
+    # convention documented on Settings in app/config.py.
+    if settings.MAX_OCR_BATCH_BYTES > 0 and total_bytes > settings.MAX_OCR_BATCH_BYTES:
         # Checked here rather than left to the platform: past Vercel's
         # 4.5 MB body cap the request dies at the edge with a bare 413
         # and never reaches this handler, so the client would get no

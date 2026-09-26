@@ -20,12 +20,12 @@ def _settings(**overrides):
 
 
 def _patch_solve(monkeypatch, gemini_value, grok_value):
-    async def fake_gemini(settings, prompt, content, client=None):
+    async def fake_gemini(settings, prompt, content, client=None, max_tokens=None):
         if isinstance(gemini_value, Exception):
             raise gemini_value
         return gemini_value
 
-    async def fake_grok(settings, prompt, content, client=None):
+    async def fake_grok(settings, prompt, content, client=None, max_tokens=None):
         if isinstance(grok_value, Exception):
             raise grok_value
         return grok_value
@@ -38,11 +38,11 @@ def _patch_solve(monkeypatch, gemini_value, grok_value):
 async def test_matching_solutions_returned_without_arbitration(monkeypatch):
     calls = {"count": 0}
 
-    async def fake_gemini(settings, prompt, content, client=None):
+    async def fake_gemini(settings, prompt, content, client=None, max_tokens=None):
         calls["count"] += 1
         return "int main(){return 0;}"
 
-    async def fake_grok(settings, prompt, content, client=None):
+    async def fake_grok(settings, prompt, content, client=None, max_tokens=None):
         calls["count"] += 1
         return "int main(){return 0;}"
 
@@ -59,13 +59,13 @@ async def test_matching_solutions_returned_without_arbitration(monkeypatch):
 async def test_disagreeing_solutions_trigger_arbitration_and_agree(monkeypatch):
     solve_step = {"n": 0}
 
-    async def fake_gemini(settings, prompt, content, client=None):
+    async def fake_gemini(settings, prompt, content, client=None, max_tokens=None):
         if "CANDIDATE A" in content:
             return "FINAL_ANSWER"
         solve_step["n"] += 1
         return "gemini_solution_A"
 
-    async def fake_grok(settings, prompt, content, client=None):
+    async def fake_grok(settings, prompt, content, client=None, max_tokens=None):
         if "CANDIDATE A" in content:
             return "FINAL_ANSWER"
         return "grok_solution_B"
@@ -79,12 +79,12 @@ async def test_disagreeing_solutions_trigger_arbitration_and_agree(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_disagreement_after_arbitration_uses_tiebreaker(monkeypatch):
-    async def fake_gemini(settings, prompt, content, client=None):
+    async def fake_gemini(settings, prompt, content, client=None, max_tokens=None):
         if "CANDIDATE A" in content:
             return "gemini_arbiter_final"
         return "gemini_solution"
 
-    async def fake_grok(settings, prompt, content, client=None):
+    async def fake_grok(settings, prompt, content, client=None, max_tokens=None):
         if "CANDIDATE A" in content:
             return "grok_arbiter_final"
         return "grok_solution"
@@ -119,12 +119,12 @@ async def test_both_solvers_failing_raises(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_always_verify_forces_arbitration_even_on_agreement(monkeypatch):
-    async def fake_gemini(settings, prompt, content, client=None):
+    async def fake_gemini(settings, prompt, content, client=None, max_tokens=None):
         if "CANDIDATE A" in content:
             return "verified_final"
         return "same_solution"
 
-    async def fake_grok(settings, prompt, content, client=None):
+    async def fake_grok(settings, prompt, content, client=None, max_tokens=None):
         if "CANDIDATE A" in content:
             return "verified_final"
         return "same_solution"

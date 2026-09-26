@@ -6,7 +6,7 @@ from tests.conftest import make_test_image_data_url
 def _mock_solver(monkeypatch):
     import app.api.chat_completions as cc
 
-    async def fake_solve(settings, text, client=None):
+    async def fake_solve(settings, text, client=None, max_tokens=None):
         return "## Problem\n...\n## Code\n```cpp\nint main(){}\n```"
 
     monkeypatch.setattr(cc, "solve_problem", fake_solve)
@@ -54,7 +54,8 @@ def test_malformed_image_bytes_rejected(app_client, backend_api_key, monkeypatch
 
 def test_oversized_image_rejected(app_client, backend_api_key, monkeypatch):
     _mock_solver(monkeypatch)
-    # MAX_IMAGE_SIZE_MB defaults to 10; craft base64 payload larger than that
+    # tests/conftest.py pins MAX_IMAGE_SIZE_MB to 10 so this limit stays
+    # exercised (production default is 0 = unlimited). Craft a bigger payload.
     huge_junk = base64.b64encode(b"0" * (11 * 1024 * 1024)).decode()
     resp = app_client.post(
         "/v1/chat/completions",
@@ -71,7 +72,8 @@ def test_too_many_images_rejected(app_client, backend_api_key, monkeypatch):
     _mock_ocr(monkeypatch)
     _mock_solver(monkeypatch)
     img = make_test_image_data_url("PNG")
-    # MAX_IMAGES is 20; 21 inline images must be refused before OCR runs.
+    # tests/conftest.py pins MAX_IMAGES to 20 (production default is 0 =
+    # unlimited); 21 inline images must be refused before OCR runs.
     resp = app_client.post(
         "/v1/chat/completions",
         headers={"Authorization": f"Bearer {backend_api_key}"},

@@ -10,7 +10,7 @@ FAKE_SOLUTION = (
 def _mock_solver(monkeypatch, captured=None):
     import app.api.chat_completions as cc
 
-    async def fake_solve(settings, text, client=None):
+    async def fake_solve(settings, text, client=None, max_tokens=None):
         if captured is not None:
             captured.append(text)
         return FAKE_SOLUTION
@@ -26,6 +26,77 @@ def _mock_ocr(monkeypatch):
         return [OcrResult(index=i, text=f"extracted text {i}") for i in range(len(images))]
 
     monkeypatch.setattr(cc, "run_ocr_on_images", fake_ocr)
+
+
+def test_client_max_tokens_is_forwarded_to_the_solver(app_client, backend_api_key, monkeypatch):
+    captured = {}
+    import app.api.chat_completions as cc
+
+    async def fake_solve(settings, text, client=None, max_tokens=None):
+        captured["max_tokens"] = max_tokens
+        return FAKE_SOLUTION
+
+    monkeypatch.setattr(cc, "solve_problem", fake_solve)
+
+    resp = app_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {backend_api_key}"},
+        json={
+            "model": "dsa-solver",
+            "max_tokens": 2048,
+            "messages": [{"role": "user", "content": "Solve: two sum"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert captured["max_tokens"] == 2048
+
+
+def test_absent_max_tokens_falls_back_to_the_server_budget(app_client, backend_api_key, monkeypatch):
+    captured = {"sentinel": object()}
+    import app.api.chat_completions as cc
+
+    async def fake_solve(settings, text, client=None, max_tokens=None):
+        captured["max_tokens"] = max_tokens
+        return FAKE_SOLUTION
+
+    monkeypatch.setattr(cc, "solve_problem", fake_solve)
+
+    resp = app_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {backend_api_key}"},
+        json={"model": "dsa-solver", "messages": [{"role": "user", "content": "Solve: two sum"}]},
+    )
+    assert resp.status_code == 200
+    assert captured["max_tokens"] is None
+
+
+def test_truncated_answer_surfaces_as_502_and_is_logged(app_client, backend_api_key, monkeypatch, caplog):
+    import logging
+
+    import app.api.chat_completions as cc
+    from app.services.consensus_solver import ConsensusSolverError
+
+    async def failing_solve(settings, text, client=None, max_tokens=None):
+        raise ConsensusSolverError(
+            "Both solver providers failed. "
+            "Gemini: Gemini stopped at its 32768-token output cap before finishing "
+            "the answer. Grok: Grok stopped at its 32768-token output cap."
+        )
+
+    monkeypatch.setattr(cc, "solve_problem", failing_solve)
+
+    with caplog.at_level(logging.WARNING, logger="dsa_practice_solver"):
+        resp = app_client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {backend_api_key}"},
+            json={"model": "dsa-solver", "messages": [{"role": "user", "content": "Solve"}]},
+        )
+
+    assert resp.status_code == 502
+    # The reason must never reach the client...
+    assert "32768" not in resp.text
+    # ...but it must reach the logs, or a truncated answer is undebuggable.
+    assert any("output cap" in record.getMessage() for record in caplog.records)
 
 
 def test_text_only_request_does_not_invoke_ocr(app_client, backend_api_key, monkeypatch):
@@ -130,7 +201,7 @@ def test_mocked_solver_failure_returns_502(app_client, backend_api_key, monkeypa
     import app.api.chat_completions as cc
     from app.services.consensus_solver import ConsensusSolverError
 
-    async def failing_solve(settings, text, client=None):
+    async def failing_solve(settings, text, client=None, max_tokens=None):
         raise ConsensusSolverError("boom")
 
     monkeypatch.setattr(cc, "solve_problem", failing_solve)

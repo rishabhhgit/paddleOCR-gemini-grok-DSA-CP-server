@@ -150,6 +150,50 @@ and competitive-programming constraints (overflow, TLE, edge cases,
 exact I/O format, etc.), and shared identically by the solver and
 arbiter stages so their outputs are comparable.
 
+## No limits: what "0" means, and what it can't mean
+
+Every limit this server owns defaults to `0`, which means **no limit** —
+nothing here refuses a request, truncates what it assembles, or puts a
+clock on an answer:
+
+| Setting | Default | `0` means |
+|---|---|---|
+| `SOLVER_MAX_TOKENS` | `0` | ask for the largest budget the provider documents |
+| `REQUEST_TIMEOUT_SECONDS` | `0` | no timeout; this server sets no total deadline |
+| `MAX_PROMPT_CHARS` | `0` | any prompt length |
+| `MAX_IMAGES` | `0` | any number of screenshots per solve request |
+| `MAX_IMAGE_SIZE_MB` | `0` | any image size |
+| `MAX_OCR_BATCH_IMAGES` | `0` | any number of images per `/v1/ocr` call |
+| `MAX_OCR_BATCH_BYTES` | `0` | any batch size |
+| `ALWAYS_VERIFY` | `true` | (not a limit) every answer is cross-verified by both models |
+
+Set any of them to a positive value to put that cap back.
+
+**The output budget still has to be a number.** The APIs require one, and
+*omitting* it is not the same as unlimited: Gemini falls back to a
+model-dependent default far below its real output limit, and that default
+is what used to cut solutions off mid-function — Gemini 2.5 makes it
+worse because thinking tokens count against it too, so a hard problem
+could spend the entire default thinking and leave too little room for the
+code. So `0` sends the largest budget each provider documents
+(`UNLIMITED_BUDGET` in `gemini_client.py` / `grok_client.py`). A model
+with a smaller maximum rejects that with a 400 naming its own ceiling;
+the client retries there, remembers it for that model, and — whatever
+happens — never returns a response the provider marked as truncated. A
+truncation shows up as a logged 502, never as code that silently stops
+mid-function.
+
+A client may pass `max_tokens` on `/v1/chat/completions` to ask for
+*less* than the server budget. It can only ever lower it.
+
+**Ceilings that aren't ours to remove:** the model's own context window,
+and — only if you deploy on Vercel — its 4.5 MB request-body cap and
+function duration limit. Those surface as provider/platform errors rather
+than as a locally rejected request. Self-hosted Docker/docker-compose has
+neither. No configuration can guarantee a model's answer is *correct*;
+`ALWAYS_VERIFY=true` (the default) is the strongest signal this pipeline
+can buy — both models independently re-derive and judge the answer.
+
 ## What your app needs to plug in (the "AI providers" form)
 
 | Field | Value |
@@ -169,11 +213,14 @@ its own; it runs locally.
 
 1. Copy `.env.example` to `.env` and fill in:
    - `APP_ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET` (pick strong values)
-   - `GEMINI_API_KEY` + `GEMINI_MODEL` (e.g. `gemini-2.5-pro`)
-   - `GROK_API_KEY` + `GROK_MODEL` (e.g. `grok-4.3` — check
-     [xAI's model catalog](https://docs.x.ai) for the current
-     recommended flagship model, model slugs get retired/renamed over
-     time)
+   - `GEMINI_API_KEY` + `GEMINI_MODEL` (e.g. `gemini-2.5-pro`) —
+     called over Google's OpenAI-compatible endpoint
+     (`https://generativelanguage.googleapis.com/v1beta/openai`)
+   - `GROK_API_KEY` + `GROK_MODEL` — the second solver, called over
+     Groq's OpenAI-compatible endpoint (`https://api.groq.com/openai/v1`)
+     with whatever model slug you pick there (e.g. `openai/gpt-oss-120b`
+     — see [Groq's model catalog](https://console.groq.com/docs/models);
+     slugs get retired/renamed over time)
    - PaddleOCR's own settings (`PADDLE_OCR_LANG`, `PADDLE_OCR_DEVICE`,
      `OCR_MAX_CONCURRENCY`, ...) have sensible CPU/English defaults —
      adjust only if you need another language or have a GPU.
@@ -207,11 +254,11 @@ docker compose up -d --build
 - `TIEBREAKER_PROVIDER` (`gemini` | `grok`, default `gemini`) — who
   decides in the rare case both models still disagree after
   cross-verifying each other.
-- `ALWAYS_VERIFY` (`true`/`false`, default `false`) — force the
+- `ALWAYS_VERIFY` (`true`/`false`, default `true`) — run the
   cross-verification round even when both models already agree on the
-  first pass. Costs 2 extra model calls per request; leave off unless
-  you want an extra safety net on every single request regardless of
-  first-pass agreement.
+  first pass. On by default, because a matching first pass is weaker
+  evidence than both models independently re-deriving the same answer.
+  Turning it off costs 2 fewer model calls per request.
 
 ## Endpoints
 
@@ -222,9 +269,9 @@ docker compose up -d --build
   request" above). Requires `Authorization: Bearer <backend-generated
   key>`.
 - `POST /v1/ocr` — OCR-only batch endpoint for the two-phase flow. Same
-  auth; accepts up to `MAX_OCR_BATCH_IMAGES` (default 4) images, plus
-  the same optional `stitch` boolean (only affects this response's
-  convenience `text` field).
+  auth; accepts any number of images (`MAX_OCR_BATCH_IMAGES` defaults to
+  `0` = unlimited), plus the same optional `stitch` boolean (only
+  affects this response's convenience `text` field).
 - `GET /admin` — admin UI (password-protected).
 - `GET /health` — liveness check.
 
@@ -368,27 +415,27 @@ const answer = await fetch(`${base}/v1/chat/completions`, {
 ```
 
 - Screenshots across `ocr_results` + inline `image_url` parts in one
-  solve request must total at most `MAX_IMAGES` (20).
+  solve request have no cap by default (`MAX_IMAGES=0`).
 - Each `/v1/ocr` response also has `text`: numbered `SCREENSHOT n`
   blocks with no preamble. Concatenate those across batches if you
   prefer sending plain text instead of echoing `results`.
 - Inline `image_url` parts and `ocr_results` can be mixed in one solve
   request; inline images are OCR'd and appended after the earlier ones.
-- Each batch still has to fit Vercel's 4.5 MB body cap: batches are
-  limited to `MAX_OCR_BATCH_IMAGES` (4) images *and*
-  `MAX_OCR_BATCH_BYTES` (3 MB) of decoded image data, whichever comes
-  first. Exceeding it returns 413 with instructions to split the
-  batch — rather than the platform's opaque 413, which you'd get if the
-  check only happened at the edge. `MAX_IMAGE_SIZE_MB` applies per
-  image regardless.
+- There is no batch limit by default (`MAX_OCR_BATCH_IMAGES=0`,
+  `MAX_OCR_BATCH_BYTES=0`). **If you deploy on Vercel**, set both back to
+  positive values (the old `4` images / `3 MB` split things just under its
+  4.5 MB body cap) so an oversized batch gets a 413 with instructions to
+  split it — rather than the platform's opaque 413, which is all you'd get
+  if the check only happened at the edge. `MAX_IMAGE_SIZE_MB` applies per
+  image on the same terms.
 - Prefer screenshotting at ~1600 px wide or smaller: smaller files fit
   more images per batch and OCR faster.
 
 ## Notes
 
-- Supported image formats: PNG, JPEG, WEBP, up to `MAX_IMAGE_SIZE_MB`
-  each, `MAX_OCR_BATCH_IMAGES` per `/v1/ocr` call, and `MAX_IMAGES`
-  per solve request (all configurable).
+- Supported image formats: PNG, JPEG, WEBP — any size, any count
+  (`MAX_IMAGE_SIZE_MB`, `MAX_OCR_BATCH_IMAGES`, and `MAX_IMAGES` all
+  default to `0` = unlimited).
 - **Tall screenshots are sliced, not shrunk.** A full-page capture
   (e.g. 900 x 14000) would otherwise be squeezed to 2000px on its
   longest side — 1/7 scale — and OCR would return gibberish. Images
@@ -400,7 +447,8 @@ const answer = await fetch(`${base}/v1/chat/completions`, {
   black, green, terminal, washed-out, gradient, wallpaper and
   syntax-highlighted backgrounds all return the same text.
 - Assembled prompts over `MAX_PROMPT_CHARS` are rejected locally with a
-  413 rather than an opaque provider context-length error.
+  413 rather than an opaque provider context-length error. The default
+  is `0`, so this only applies if you set a cap.
 - Streaming (`stream: true`) is not supported — returns a 400.
 - Only base64 `data:` URLs are accepted for `image_url.url` (no
   external image fetching).

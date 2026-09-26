@@ -1,0 +1,13 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local virtualenv and env file (only .env.example is committed)
+.venv/
+venv/
+.env
+
+# Runtime state: persisted client API key + OCR model weight cache
+data/
+.paddlex/
